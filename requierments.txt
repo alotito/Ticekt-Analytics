@@ -1,0 +1,11 @@
+# Front-end web application framework
+streamlit
+
+# For making HTTP requests to the Ollama API
+requests
+
+# Pure-Python TDS driver for connecting to SQL Server
+python-tds
+
+# For data manipulation and display in dashboards
+pandas
