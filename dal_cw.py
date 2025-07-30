@@ -31,6 +31,10 @@ class ConnectWiseDAL:
         )
 
     def get_closed_tickets_since(self, last_run_date: datetime) -> List[StandardTicket]:
+        """
+        Retrieves all closed tickets from the ConnectWise reporting view
+        that have been closed since the last run date.
+        """
         tickets = []
         sql_query = """
             SELECT
@@ -40,7 +44,8 @@ class ConnectWiseDAL:
             FROM v_rpt_service
             WHERE date_closed > ? 
               AND status_description LIKE '%Close%'
-              AND ticket_owner_last_name IS NOT NULL -- ADDED
+              AND ticket_owner_last_name IS NOT NULL
+              AND LTRIM(RTRIM(ticket_owner_last_name)) <> ''
             ORDER BY date_closed;
         """
         cnxn = None
@@ -66,6 +71,9 @@ class ConnectWiseDAL:
         return tickets
 
     def get_ticket_by_number(self, ticket_number: str) -> Optional[StandardTicket]:
+        """
+        Retrieves a single ticket by its specific ticket number for the debug tool.
+        """
         sql_query = """
             SELECT TOP 1
                 ticketnbr, summary, status_description, company_name,
@@ -73,7 +81,8 @@ class ConnectWiseDAL:
                 CONCAT(ticket_owner_first_name, ' ', ticket_owner_last_name) AS TechnicianFullName
             FROM v_rpt_service
             WHERE CAST(ticketnbr AS NVARCHAR(50)) = ?
-              AND ticket_owner_last_name IS NOT NULL; -- ADDED
+              AND ticket_owner_last_name IS NOT NULL
+              AND LTRIM(RTRIM(ticket_owner_last_name)) <> '';
         """
         cnxn = None
         try:
@@ -99,6 +108,10 @@ class ConnectWiseDAL:
                 cnxn.close()
                 
     def get_ticket_batch(self, last_processed_id: int, batch_size: int) -> List[StandardTicket]:
+        """
+        Retrieves a single batch of tickets starting after the last processed ID
+        for the main analysis script.
+        """
         tickets = []
         sql_query = """
             SELECT
@@ -107,7 +120,8 @@ class ConnectWiseDAL:
                 CONCAT(ticket_owner_first_name, ' ', ticket_owner_last_name) AS TechnicianFullName
             FROM v_rpt_service
             WHERE ticketnbr > ?
-              AND ticket_owner_last_name IS NOT NULL -- ADDED
+              AND ticket_owner_last_name IS NOT NULL
+              AND LTRIM(RTRIM(ticket_owner_last_name)) <> ''
             ORDER BY ticketnbr
             OFFSET 0 ROWS FETCH NEXT ? ROWS ONLY;
         """

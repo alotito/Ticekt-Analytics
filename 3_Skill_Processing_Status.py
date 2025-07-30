@@ -1,102 +1,109 @@
-# pages/3_Skill_Processing_Status.py
 import streamlit as st
 import pandas as pd
-import pytds
+import sqlalchemy
+import urllib
 import configparser
+import time
 
-st.set_page_config(page_title="Skill Processing Status", page_icon="⚙️")
-st.title("⚙️ Skill Processing Status")
+st.set_page_config(page_title="Live Worker Status", page_icon="⚙️")
+st.title("⚙️ Live Worker Dashboard")
 
 # --- Database Connection ---
 @st.cache_resource
-def get_db_connection():
+def get_db_engine():
+    """Establishes a connection engine to the TicketAnalytics database using SQLAlchemy."""
     config = configparser.ConfigParser()
     config.read('config.ini')
     db_config = config['analytics_db']
     
-    server_and_port = db_config['server'].split(',')
-    server = server_and_port[0]
-    port = int(server_and_port[1]) if len(server_and_port) > 1 else 1433
+    password = urllib.parse.quote_plus(db_config['password'])
     
-    database = db_config['database']
-    user = db_config['user']
-    password = db_config['password']
-    
-    return pytds.connect(
-        server=server, database=database, user=user, password=password, port=port
+    connection_url = (
+        f"mssql+pyodbc://{db_config['user']}:{password}@"
+        f"{db_config['server']}/{db_config['database']}?"
+        f"driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
     )
+    
+    return sqlalchemy.create_engine(connection_url)
 
-@st.cache_data(ttl=60)
-def load_status_data():
-    query = "SELECT TOP 10 * FROM dbo.AnalysisRuns ORDER BY RunStartTime DESC;"
+@st.cache_data(ttl=5)
+def load_live_status():
+    """Queries the database for live worker status and queue count."""
+    in_progress_query = "SELECT WorkerID, SourceTicketNumber, LastUpdated FROM dbo.Tickets WHERE ProcessingStatusID = 1;"
+    pending_query = "SELECT COUNT(*) FROM dbo.Tickets WHERE ProcessingStatusID = 0;"
+    history_query = "SELECT TOP 10 * FROM dbo.AnalysisRuns ORDER BY RunStartTime DESC;"
+    # --- ADDED: Query to calculate throughput ---
+    throughput_query = """
+        SELECT
+            COUNT(TicketID) AS TotalCompleted,
+            MIN(LastUpdated) AS FirstCompletion,
+            MAX(LastUpdated) AS LastCompletion
+        FROM dbo.Tickets
+        WHERE ProcessingStatusID = 2;
+    """
+    
     try:
-        cnxn = get_db_connection()
-        cursor = cnxn.cursor()
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        cols = [desc[0] for desc in cursor.description]
-        df = pd.DataFrame(rows, columns=cols)
-        return df
+        engine = get_db_engine()
+        
+        df_history = pd.read_sql(history_query, engine)
+        df_in_progress = pd.read_sql(in_progress_query, engine)
+        
+        tickets_per_hour = 0
+        with engine.connect() as cnxn:
+            # Get pending count
+            result_pending = cnxn.execute(sqlalchemy.text(pending_query))
+            pending_count = result_pending.scalar_one_or_none() or 0
+            
+            # --- ADDED: Calculate tickets per hour ---
+            result_throughput = cnxn.execute(sqlalchemy.text(throughput_query)).first()
+            if result_throughput and result_throughput.TotalCompleted > 1:
+                total_completed, first_completion, last_completion = result_throughput
+                if first_completion and last_completion:
+                    duration_hours = (last_completion - first_completion).total_seconds() / 3600
+                    if duration_hours > 0:
+                        tickets_per_hour = total_completed / duration_hours
+        
+        return df_history, df_in_progress, pending_count, tickets_per_hour
+
     except Exception as e:
-        st.error(f"Failed to load status data from the database: {e}")
-        return pd.DataFrame()
+        st.error(f"Failed to load live data from the database: {e}")
+        return pd.DataFrame(), pd.DataFrame(), 0, 0
 
-# --- Display Status ---
-st.write("This page shows the status and history of the `run_analysis.py` backend script.")
+# --- Display Dashboard ---
+placeholder = st.empty()
 
-if st.button("Refresh Status"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.rerun()
+while True:
+    with placeholder.container():
+        df_history, df_workers, pending_count, tph = load_live_status()
 
-df_status = load_status_data()
+        # --- UPDATED: Added a third column for the new metric ---
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Tickets Remaining in Queue", f"{pending_count:,}")
+        
+        unique_workers = df_workers['WorkerID'].nunique() if not df_workers.empty else 0
+        col2.metric("Active Workers", unique_workers)
 
-if not df_status.empty:
-    latest_run = df_status.iloc[0]
+        col3.metric("Avg. Tickets / Hour", f"{tph:,.0f}")
+        # --- END OF UPDATE ---
 
-    st.subheader("Latest Run")
-    cols = st.columns(4)
-    
-    status = latest_run['Status']
-    if status == 'Completed':
-        cols[0].metric("Status", status, "✅")
-    elif status == 'Running':
-        cols[0].metric("Status", status, "⏳")
-    else:
-        cols[0].metric("Status", status, "❌")
-        if pd.notna(latest_run['ErrorMessage']):
-            st.error(f"**Error Message:** {latest_run['ErrorMessage']}")
+        st.subheader("Live Worker Activity")
+        if not df_workers.empty:
+            df_workers['SourceTicketNumber'] = df_workers['SourceTicketNumber'].astype(str)
+            df_summary = df_workers.groupby('WorkerID').agg({
+                'SourceTicketNumber': ', '.join,
+                'LastUpdated': 'max'
+            }).reset_index()
+            df_summary = df_summary.rename(columns={
+                'WorkerID': 'Worker ID', 'SourceTicketNumber': 'Processing Tickets', 'LastUpdated': 'Last Update Time'
+            }).set_index('Worker ID')
+            st.dataframe(df_summary, use_container_width=True)
+        else:
+            st.success("No workers are currently active.")
 
-    tickets_processed = latest_run['TicketsProcessed']
-    if pd.notna(tickets_processed):
-        cols[1].metric("Tickets Processed", f"{tickets_processed:.0f}")
-    else:
-        cols[1].metric("Tickets Processed", "0")
+        st.subheader("Recent Run History")
+        if not df_history.empty:
+            st.dataframe(df_history, use_container_width=True)
+        else:
+            st.info("No run history found.")
 
-    run_start = latest_run['RunStartTime']
-    run_end = latest_run['RunEndTime']
-    if pd.notna(run_end):
-        duration = run_end - run_start
-        cols[2].metric("Duration (sec)", f"{duration.total_seconds():.2f}")
-    else:
-        cols[2].metric("Duration (sec)", "In Progress...")
-    
-    last_checkpoint = latest_run['LastTicketDateProcessed']
-    if pd.notna(last_checkpoint):
-        cols[3].metric("Checkpoint", last_checkpoint.strftime("%Y-%m-%d"))
-    else:
-        cols[3].metric("Checkpoint", "N/A")
-
-    with st.expander("Current Configuration"):
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        # --- UPDATED TO READ FROM [skills_settings] ---
-        skill_config = config['skills_settings']
-        st.text(f"Batch Size: {skill_config.get('batch_size')}")
-        st.text(f"LLM Model: {skill_config.get('model')}")
-        # --- End of update ---
-
-    st.subheader("Recent Run History")
-    st.dataframe(df_status)
-else:
-    st.warning("No run history found in the database. Please run the `run_backend.bat` script at least once.")
+    time.sleep(5)

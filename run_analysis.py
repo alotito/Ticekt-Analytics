@@ -1,142 +1,107 @@
-# analytics_engine/run_analysis.py (Database Checkpointing Version)
-import pyodbc
-import configparser
-import base64
-import json
 import os
+import time
+import socket
+import configparser
+import random  # ADDED
+import logging
+import traceback
 from datetime import datetime
-from typing import Optional, List
+from .dal_analytics import AnalyticsDAL
+from .dal_cw import ConnectWiseDAL
+from .llm_interface import OllamaInterface
+from .utils import parse_llm_output
 
-from .dal_cw import ConnectWiseDAL #
-from .llm_interface import OllamaInterface #
-from .models import StandardTicket #
+# --- ADDED: A list of names for the workers ---
+WORKER_NAMES = [
+    "GabbysHenchamn", "BertsMinion", "Galileo", "Curie", "Copernicus", "Kepler",
+    "Faraday", "Maxwell", "Bohr", "Heisenberg", "Feynman", "Turing"
+]
 
-class AnalysisRunner:
-    def __init__(self, config_path: str = 'config.ini'): #
+def setup_logger(worker_id: str):
+    """Sets up a unique logger for this worker that writes to a file."""
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    logger = logging.getLogger(worker_id)
+    logger.setLevel(logging.INFO)
+    log_path = os.path.join('logs', f"{worker_id}.log")
+    handler = logging.FileHandler(log_path, mode='w')
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    if not logger.handlers:
+        logger.addHandler(handler)
+    return logger
+
+def main():
+    # --- UPDATED: Generate a new random worker name ---
+    worker_name = random.choice(WORKER_NAMES)
+    worker_id = f"{worker_name}-{os.getpid()}"
+    # --- END OF UPDATE ---
+    
+    logger = setup_logger(worker_id)
+
+    try:
         config = configparser.ConfigParser()
-        config.read(config_path)
-        skill_config = config['skills_settings']
-        self.dal = ConnectWiseDAL(config_path)
-        self.llm = OllamaInterface(
-            model_name=skill_config['model'],
-            prompt_template_path=skill_config['prompt_path']
-        )
-        self.batch_size = skill_config.getint('batch_size')
-        self.max_token_threshold = skill_config.getint('max_token_threshold')
-        db_config = config['analytics_db']
-        password = base64.b64decode(db_config['password_b64']).decode('utf-8')
-        self.dest_conn_str = (
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-            f"SERVER={db_config['server']};DATABASE={db_config['database']};"
-            f"UID={db_config['user']};PWD={{{password}}};TrustServerCertificate=yes;"
-        )
-
-    def _get_last_processed_id(self, cursor: pyodbc.Cursor) -> int:
-        """Reads the last processed ticket ID from the database."""
-        cursor.execute("SELECT TOP 1 LastProcessedTicketID FROM dbo.ProcessingCheckpoint;")
-        result = cursor.fetchone()
-        return result[0] if result else 0
-
-    def _update_last_processed_id(self, cursor: pyodbc.Cursor, ticket_id: int):
-        """Updates the last processed ticket ID in the database."""
-        cursor.execute("UPDATE dbo.ProcessingCheckpoint SET LastProcessedTicketID = ?;", ticket_id)
-
-    def _get_or_create_id(self, cursor: pyodbc.Cursor, table_name: str, column_name: str, value: str) -> Optional[int]:
-        if not value or not value.strip(): return None
-        cursor.execute(f"SELECT {table_name[:-1]}ID FROM dbo.{table_name} WHERE {column_name} = ?", value)
-        row = cursor.fetchone()
-        if row: return row[0]
-        sql = f"INSERT INTO dbo.{table_name} ({column_name}) OUTPUT INSERTED.{table_name[:-1]}ID VALUES (?);"
-        new_id = cursor.execute(sql, value).fetchone()[0]
-        return new_id
-
-    def _parse_llm_output(self, raw_output: str) -> List[str]:
-        try:
-            clean_output = raw_output.strip().replace("```json", "").replace("```", "").strip()
-            if not clean_output: return []
-            data = json.loads(clean_output)
-            skills = data.get('skills', [])
-            return skills if isinstance(skills, list) else []
-        except: return []
-
-    def run(self):
-        start_time = datetime.now()
-        cnxn_dest = None
-        run_id = None
-        total_tickets_processed = 0
-        try:
-            cnxn_dest = pyodbc.connect(self.dest_conn_str, autocommit=False)
-            cursor = cnxn_dest.cursor()
-            cursor.execute("INSERT INTO dbo.AnalysisRuns (RunStartTime, Status) VALUES (?, 'Running');", start_time)
-            run_id = cursor.execute("SELECT SCOPE_IDENTITY();").fetchone()[0]
-            cnxn_dest.commit()
-            
-            last_id = self._get_last_processed_id(cursor)
-
-            while True:
-                if os.path.exists('stop.txt'):
-                    print("\nStop file detected. Shutting down gracefully...")
-                    os.remove('stop.txt')
-                    end_time = datetime.now()
-                    cursor.execute("UPDATE dbo.AnalysisRuns SET RunEndTime = ?, Status = 'Stopped by User', TicketsProcessed = ? WHERE RunID = ?;",
-                                   end_time, total_tickets_processed, run_id)
-                    cnxn_dest.commit()
-                    break
-
-                print(f"\nFetching next batch of {self.batch_size} tickets after ID {last_id}...")
-                ticket_batch = self.dal.get_ticket_batch(last_id, self.batch_size)
-
-                if not ticket_batch:
-                    print("No more tickets found to process.")
-                    break
-
-                for ticket in ticket_batch:
-                    try:
-                        print(f"  -> Processing Ticket #{ticket.ticket_id}...")
-                        # ... (Ticket processing logic) ...
-                        raw_output = self.llm.get_skill_analysis(ticket.full_text)
-                        discovered_skills = self._parse_llm_output(raw_output)
-                        if not discovered_skills:
-                            self._update_last_processed_id(cursor, ticket.ticket_id)
-                            cnxn_dest.commit()
-                            last_id = ticket.ticket_id
-                            continue
-                        
-                        technician_id = self._get_or_create_id(cursor, 'Technicians', 'TechnicianName', ticket.technician_name)
-                        if technician_id is None:
-                            self._update_last_processed_id(cursor, ticket.ticket_id)
-                            cnxn_dest.commit()
-                            last_id = ticket.ticket_id
-                            continue
-
-                        source_system_id = 1
-                        sql_insert_ticket = "INSERT INTO dbo.Tickets (SourceTicketNumber, SourceSystemID, TechnicianID, DateClosed) OUTPUT INSERTED.TicketID VALUES (?, ?, ?, ?);"
-                        new_ticket_id = cursor.execute(sql_insert_ticket, ticket.ticket_id, source_system_id, technician_id, ticket.date_closed).fetchone()[0]
-                        
-                        for skill_name in discovered_skills:
-                            discovered_skill_id = self._get_or_create_id(cursor, 'DiscoveredSkills', 'DiscoveredSkillName', skill_name)
-                            if discovered_skill_id:
-                                cursor.execute("INSERT INTO dbo.TicketSkills (TicketID, DiscoveredSkillID) VALUES (?, ?);", new_ticket_id, discovered_skill_id)
-                        
-                        self._update_last_processed_id(cursor, ticket.ticket_id)
-                        cnxn_dest.commit()
-                        total_tickets_processed += 1
-                        print(f"   -> Successfully saved results for Ticket #{ticket.ticket_id}.")
-                    except Exception as e_ticket:
-                        print(f"   !! FAILED to process Ticket #{ticket.ticket_id}. ROLLING BACK. Error: {e_ticket}")
-                        cnxn_dest.rollback()
-                    
-                    last_id = ticket.ticket_id
-            
-            # ... (Final run logging) ...
+        config.read('config.ini')
+        settings = config['skills_settings']
         
-        except Exception as e_main:
-            print(f" !! A CRITICAL ERROR occurred during the run: {e_main}")
-            # ... (Error logging) ...
-        finally:
-            if cnxn_dest:
-                cnxn_dest.close()
+        batch_size = int(settings['batch_size'])
+        delay = int(settings['delay_between_batches_seconds'])
 
-if __name__ == '__main__':
-    runner = AnalysisRunner()
-    runner.run()
+        logger.info(f"Worker started. Batch size: {batch_size}")
+
+        analytics_dal = AnalyticsDAL()
+        cw_dal = ConnectWiseDAL()
+        llm = OllamaInterface(
+            model_name=settings['model'],
+            prompt_template_path=settings['prompt_path']
+        )
+
+        while True:
+            time.sleep(random.uniform(0, 1))
+            
+            logger.info(f"Attempting to claim a batch of {batch_size} tickets...")
+            ticket_batch = analytics_dal.claim_ticket_batch(worker_id, batch_size)
+
+            if not ticket_batch:
+                logger.info("No pending tickets found. Shutting down.")
+                break
+            
+            logger.info(f"Claim successful. Processing {len(ticket_batch)} tickets.")
+            for ticket_data in ticket_batch:
+                ticket_pk = ticket_data['TicketID']
+                source_ticket_number = ticket_data['SourceTicketNumber']
+                
+                try:
+                    logger.info(f"Processing Ticket #{source_ticket_number}. Fetching from source DB...")
+                    ticket_details = cw_dal.get_ticket_by_number(str(source_ticket_number))
+                    if not ticket_details or not ticket_details.full_text:
+                        raise ValueError("Ticket not found in source or has no text content.")
+
+                    logger.info(f"Ticket #{source_ticket_number}. Sending to LLM...")
+                    raw_output = llm.get_skill_analysis(ticket_details.full_text)
+                    
+                    logger.info(f"Ticket #{source_ticket_number}. Parsing LLM response...")
+                    skills = parse_llm_output(raw_output)
+
+                    if skills:
+                        logger.info(f"Ticket #{source_ticket_number}. Saving {len(skills)} skills...")
+                        analytics_dal.save_skills_for_ticket(ticket_pk, skills)
+                    
+                    analytics_dal.update_ticket_status(ticket_pk, status_id=2)
+                    logger.info(f"Successfully processed Ticket #{source_ticket_number}.")
+
+                except Exception as e:
+                    error_trace = traceback.format_exc()
+                    logger.error(f"FAILED to process Ticket #{source_ticket_number}. Error: {e}\n{error_trace}")
+                    analytics_dal.update_ticket_status(ticket_pk, status_id=3)
+            
+            logger.info(f"Batch finished. Waiting for {delay} seconds.")
+            time.sleep(delay)
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.critical(f"CRITICAL ERROR in main loop: {e}\n{error_trace}")
+        time.sleep(15)
+
+if __name__ == "__main__":
+    main()

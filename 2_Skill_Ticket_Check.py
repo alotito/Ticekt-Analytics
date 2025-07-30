@@ -9,32 +9,7 @@ from typing import List, Optional
 # The user has provided the full content of these files, so they are cited.
 from analytics_engine.dal_cw import ConnectWiseDAL #
 from analytics_engine.llm_interface import OllamaInterface #
-
-def parse_llm_output(raw_output: str) -> List[str]:
-    """
-    Tries to parse the JSON string from the LLM.
-    Handles malformed JSON and missing keys gracefully.
-    """
-    try:
-        # The model sometimes wraps its JSON in markdown. Let's remove it.
-        clean_output = raw_output.strip().replace("```json", "").replace("```", "").strip()
-        if not clean_output:
-            return []
-            
-        data = json.loads(clean_output)
-        
-        # Safely get the 'skills' key. Returns an empty list if the key is missing.
-        skills = data.get('skills', [])
-        
-        return skills if isinstance(skills, list) else []
-            
-    except json.JSONDecodeError:
-        print(f"Warning: Failed to decode JSON from LLM output: {raw_output}")
-        return []
-    except Exception as e:
-        print(f"An unexpected error occurred during parsing: {e}")
-        return []
-
+from analytics_engine.utils import parse_llm_output
 
 def fetch_and_analyze_ticket(ticket_number, config_path):
     """
