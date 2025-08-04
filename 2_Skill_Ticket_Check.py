@@ -11,6 +11,8 @@ from analytics_engine.dal_cw import ConnectWiseDAL #
 from analytics_engine.llm_interface import OllamaInterface #
 from analytics_engine.utils import parse_llm_output
 
+# In pages/2_Skill_Ticket_Check.py
+
 def fetch_and_analyze_ticket(ticket_number, config_path):
     """
     Contains the blocking I/O calls (database, LLM).
@@ -29,7 +31,14 @@ def fetch_and_analyze_ticket(ticket_number, config_path):
         model_name=skill_config['model'],
         prompt_template_path=skill_config['prompt_path']
     )
-    raw_output = llm.get_skill_analysis(ticket.full_text)
+
+    # --- THIS IS THE FIX ---
+    # We now format the prompt on the page before sending it to the LLM.
+    prompt_template = llm.prompt_template
+    final_prompt = prompt_template.format(ticket_text=ticket.full_text)
+    raw_output = llm.get_skill_analysis(final_prompt)
+    # --- END OF FIX ---
+    
     parsed_skills = parse_llm_output(raw_output)
     
     return ticket, raw_output, parsed_skills

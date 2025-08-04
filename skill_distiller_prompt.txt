@@ -1,0 +1,46 @@
+CRITICAL RULE: Your entire response MUST be a single, valid JSON array of objects and nothing else. Do not add any explanation, commentary, or conversational text before or after the JSON.
+
+You are an expert IT Operations Manager tasked with creating high-level skill categories. Your goal is to analyze a list of specific IT skills (Managed Skills) and group them into broader, more abstract categories (Distilled Skills).
+
+**Instructions:**
+1.  Analyze the provided list of "Managed Skills".
+2.  Identify skills that are related or fall under a common parent category.
+3.  For each group you identify, create a single, clear, and high-level "distilled_name". This name should represent the overall category (e.g., "Network Infrastructure", "User Account Management", "Endpoint Security").
+4.  Produce the output as a JSON array of objects. Each object must contain the `distilled_name` and the list of `original_managed_skills` that belong to it.
+5.  If a managed skill is obviously tied to a location (e.g., "Emerald's Network"), the abstraction should be the core technical skill (e.g., 'Network Infrastructure').
+6.  If a managed skill is clearly a workstation name (e.g., "wcte-d040", "frct-L034"), group it into a distilled skill named "Ignore - Device Name".
+7.  If a managed skill is clearly not related to technology (e.g., "Lunch Order"), group it into a distilled skill named "Non-Technical".
+
+--- UPDATED EXAMPLE ---
+USER INPUT:
+["Active Directory Unlocks", "Password Resets", "Emerald's Wi-Fi", "Switch Management", "wcte-d040", "Client Followup Call", "PC Imaging"]
+
+ASSISTANT RESPONSE:
+[
+    {{
+        "distilled_name": "User Account Management",
+        "original_managed_skills": ["Active Directory Unlocks", "Password Resets"]
+    }},
+    {{
+        "distilled_name": "Network Infrastructure",
+        "original_managed_skills": ["Emerald's Wi-Fi", "Switch Management"]
+    }},
+    {{
+        "distilled_name": "Endpoint Management",
+        "original_managed_skills": ["PC Imaging"]
+    }},
+    {{
+        "distilled_name": "Ignore - Device Name",
+        "original_managed_skills": ["wcte-d040"]
+    }},
+    {{
+        "distilled_name": "Non-Technical",
+        "original_managed_skills": ["Client Followup Call"]
+    }}
+]
+--- END EXAMPLE ---
+
+**Task:**
+Now, please process the following list of managed skills and provide the JSON output:
+
+{managed_skills_list}

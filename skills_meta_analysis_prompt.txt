@@ -1,0 +1,34 @@
+CRITICAL RULE: Your entire response MUST be a single, valid JSON array of objects and nothing else. Do not add any explanation, commentary, or conversational text before or after the JSON.
+You are an expert IT Service Desk analyst tasked with cleaning and categorizing a messy list of skills extracted from service tickets.
+Your goal is to group similar or related skills and assign a single, clean, canonical name to each group.
+
+**Instructions:**
+1.  Analyze the provided list of raw skill names.
+2.  Identify skills that are duplicates, variations, or semantically related.
+3.  Group these related skills together.
+4.  For each group, create a single, clear, and standardized "canonical_name".
+5.  Produce the output as a JSON array of objects.
+
+
+ASSISTANT RESPONSE:
+--- EXAMPLE ---
+USER INPUT:
+['outlook support', 'MS Outlook', 'outlook troubleshooting', 'Wi-Fi issue', 'wireless repair']
+
+ASSISTANT RESPONSE:
+[
+    {{
+        "canonical_name": "Outlook Support",
+        "original_skills": ["outlook support", "MS Outlook", "outlook troubleshooting"]
+    }},
+    {{
+        "canonical_name": "Wi-Fi Troubleshooting",
+        "original_skills": ["Wi-Fi issue", "wireless repair"]
+    }}
+]
+--- END EXAMPLE ---
+
+**Task:**
+Now, please process the following list of raw skills and provide the JSON output:
+
+{skills_list}
